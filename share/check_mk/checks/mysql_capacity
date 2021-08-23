@@ -1,0 +1,96 @@
+#!/usr/bin/python
+# -*- encoding: utf-8; py-indent-offset: 4 -*-
+# +------------------------------------------------------------------+
+# |             ____ _               _        __  __ _  __           |
+# |            / ___| |__   ___  ___| | __   |  \/  | |/ /           |
+# |           | |   | '_ \ / _ \/ __| |/ /   | |\/| | ' /            |
+# |           | |___| | | |  __/ (__|   <    | |  | | . \            |
+# |            \____|_| |_|\___|\___|_|\_\___|_|  |_|_|\_\           |
+# |                                                                  |
+# | Copyright Mathias Kettner 2014             mk@mathias-kettner.de |
+# +------------------------------------------------------------------+
+#
+# This file is part of Check_MK.
+# The official homepage is at http://mathias-kettner.de/check_mk.
+#
+# check_mk is free software;  you can redistribute it and/or modify it
+# under the  terms of the  GNU General Public License  as published by
+# the Free Software Foundation in version 2.  check_mk is  distributed
+# in the hope that it will be useful, but WITHOUT ANY WARRANTY;  with-
+# out even the implied warranty of  MERCHANTABILITY  or  FITNESS FOR A
+# PARTICULAR PURPOSE. See the  GNU General Public License for more de-
+# tails. You should have  received  a copy of the  GNU  General Public
+# License along with GNU Make; see the file  COPYING.  If  not,  write
+# to the Free Software Foundation, Inc., 51 Franklin St,  Fifth Floor,
+# Boston, MA 02110-1301 USA.
+
+# <<<mysql_capacity>>>
+# greendb 163840  1428160512
+# hirn    16384   238026752
+# information_schema  9216    0
+# mysql   650067  0
+# performance_schema  0   0
+# wa-confluence   15499264    13805551616
+
+# new: can have instance headers (can be empty), e.g.:
+# <<<mysql_capacity>>>
+# [[]]
+# information_schema      147456  0
+# mysql   665902  292
+# performance_schema      0       0
+# test 409255936       54525952
+
+
+@mysql_parse_per_item
+def parse_mysql_capacity(info):
+    data = {}
+    for line in info:
+        dbname, size, avail = " ".join(line[:-2]), line[-2], line[-1]
+        try:
+            data[dbname] = (int(size), int(avail))
+        except ValueError:
+            data[dbname] = (size, avail)
+
+    return data
+
+
+@discover
+def inventory_mysql_size(instance, data):
+    for dbname, values in data.iteritems():
+        if dbname not in ("information_schema", "mysql", "performance_schema") \
+            and 'NULL' not in values:
+            yield "%s:%s" % (instance, dbname)
+
+
+def check_mysql_size(item, params, parsed):
+    if ":" not in item:
+        # support items discovered before 1.2.7
+        instance, dbname = "mysql", item
+    else:
+        instance, dbname = item.split(':')
+
+    size, _avail = parsed.get(instance, {}).get(dbname, (None, None))
+    if not isinstance(size, int):
+        return
+
+    # size and avail are given as bytes
+    yield check_levels(size,
+                       'database_size',
+                       params.get('mysql_size'),
+                       human_readable_func=get_bytes_human_readable,
+                       infoname="Size")
+    if 'trend_range' in params:
+        status, infotext, perf_data = size_trend('mysql_capacity', item, "mysql database", params, size, size)
+        yield status, infotext.replace(', ', '', 1), perf_data
+
+
+check_info['mysql_capacity'] = {
+    "parse_function": parse_mysql_capacity,
+    "inventory_function": inventory_mysql_size,
+    "check_function": check_mysql_size,
+    "service_description": "MySQL DB Size %s",
+    "has_perfdata": True,
+    "group": "mysql_db_size",
+    "includes": ["size_trend.include", "mysql.include"],
+}
+
